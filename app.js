@@ -124,7 +124,7 @@ function draw_map(lookup){
 		var pov_extent = d3.extent(geoj.features, function(d,i){return d.properties.pov1014});
 		var chgpoor_extent = d3.extent(geoj.features, function(d,i){return d.properties.chgpoor});
 
-		var int = d3.interpolateLab("steelblue", "brown");
+		var int = d3.interpolateLab("#eeeeee", "#333333");
 		var pov_scale = d3.scaleSequential(int).domain(pov_extent);
 		var chgpoor_scale = d3.scaleSequential(int).domain(chgpoor_extent);
 
