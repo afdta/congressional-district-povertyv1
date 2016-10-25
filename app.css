@@ -47,6 +47,32 @@
 	padding:10px 15px;
 }
 
+.r-district, .d-district{
+	position:relative;
+}
+.r-district:before{
+	content:"";
+	height:16px;
+	width:16px;
+	border-radius:8px;
+	position:relative;
+	left:-20px;
+	background-color:#ED312D;
+	position:absolute;
+	display:block;
+}
+.d-district:before{
+	content:"";
+	height:16px;
+	width:16px;
+	border-radius:8px;
+	position:relative;
+	left:-20px;
+	background-color:#034EDB;
+	position:absolute;
+	display:block;
+}
+
 
 /*clearfix this class*/
 .c-fix:after{content:""; display:table; clear:both;}

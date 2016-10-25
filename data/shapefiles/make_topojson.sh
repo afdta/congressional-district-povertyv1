@@ -1,3 +1,5 @@
+
+
 #!/usr/bin/env bash
 
 folder=/home/alec/Projects/Brookings/congressional-district-poverty
@@ -6,5 +8,8 @@ for var in 01 02 04 05 06 08 09 10 11 12 13 15 16 17 18 19 20 21 22 23 24 25 26 
 do 
 $folder/node_modules/.bin/topojson -o $folder/data/shapefiles/topojson/st$var.json \
 --id-property GEOID -q 1e6 --simplify 0.17 --filter none --projection 'd3.geo.albersUsa()' --width 290 \
--p stfips=STATEFP,district=CD114FP,geoid=GEOID -- districts=$folder/data/shapefiles/states/$var.shp
+-p stfips=STATEFP,cdfips=CD114FP,geoid=GEOID,\
+state,district,rep,party,poor00,pov00,poor1014,pov1014,\
+chgpoor,sigpoor,chgpov,sigpov \
+-- districts=$folder/data/shapefiles/states/$var.shp
 done
