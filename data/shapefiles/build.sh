@@ -13,14 +13,14 @@ if [ -e states ]
   	echo "Removed states directory"
 fi
 
-if [ -e topojson ]
+if [ -e ../../assets ]
   then 
-  	rm -r topojson
-  	echo "Removed topojson directory"
+  	rm -r assets
+  	echo "Removed assets directory"
 fi
 
 mkdir states
-mkdir topojson
+mkdir ../../assets
 
 #run r script that subsets the tract file into state shape files
 Rscript subset_tracts.R 

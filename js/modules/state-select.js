@@ -12,9 +12,23 @@ state_select.setup = function(container){
 
 
 	var wrap = d3.select(container);
-		wrap.selectAll("select").remove(); //there's no updating here
+		wrap.selectAll("*").remove(); //there's no updating here
 
-	var select = wrap.append("select");
+	var instruction = wrap.append("p").html("<em>Select a state</em>: ")
+									  .style("display","inline-block")
+									  .style("margin","0px 7px 0px 0px")
+									  .style("line-height","1.65em")
+									  .style("font-size","1em")
+									  .style("padding","2px 0px 2px 0px");
+
+	var select = wrap.append("select").style("display","inline-block")
+									  .style("margin","0px 0px 0px 0px")
+									  .style("line-height","1.65em")
+									  .style("font-size","1em")
+									  .style("padding","2px 5px 2px 5px")
+									  .style("background","transparent")
+									  .style("outline","none");
+
 	var options = select.selectAll("option").data(states.filter(function(d,i,a){
 		var fips = +d.STATE;
 		return fips <= 56;
@@ -22,12 +36,32 @@ state_select.setup = function(container){
 		options.attr("value", function(d,i){return d.STATE})
 			   .text(function(d,i){return d.STATE_NAME});
 
+	var t = function(s){
+		return {fips: s.STATE, abbr: s.STUSAB, name:s.STATE_NAME};
+	}
+
 	select.on("change", function(d,i){
 		var val = this.value;
+		try{
+			var s = states[this.selectedIndex];
+			if(s.STATE===val){
+				var r = t(s);
+			}
+			else{
+				throw "ERROR";
+			}
+			
+		}
+		catch(e){
+			var r = {fips: val, abbr: null, name:null};
+		}
+
 		if(!!state_select.onchg){
-			state_select.onchg(val);
+			state_select.onchg(r);
 		}
 	});
+
+	return t(states[0]);
 }
 
 state_select.onchange = function(callback){

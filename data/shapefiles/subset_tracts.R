@@ -1,4 +1,5 @@
 library("rgdal")
+library("jsonlite")
 
 pov <- read.csv("/home/alec/Projects/Brookings/congressional-district-poverty/data/Poverty Trends by District.csv", stringsAsFactors = FALSE, na.strings=c("NA",""," "))[c(-10,-15,-16,-17)]
 unique(c(pov$sig_poor, pov$sig_rate))
@@ -7,6 +8,8 @@ unique(c(pov$sig_poor, pov$sig_rate))
 names(pov) <- c("state", "cdid", "district", "rep", "party", 
                 "poor00", "pov00", "poor1014", "pov1014", 
                 "chgpoor", "sigpoor", "chgpov", "sigpov")
+
+writeLines(toJSON(pov, digits=5), "/home/alec/Projects/Brookings/congressional-district-poverty/assets/poverty_trends.json")
 
 cd0 <- readOGR("/home/alec/Projects/Brookings/congressional-district-poverty/data/shapefiles/cb_2015_us_cd114_500k/","cb_2015_us_cd114_500k")
 cd0@data$cdid <- sub("^0*", "", cd0@data$GEOID)

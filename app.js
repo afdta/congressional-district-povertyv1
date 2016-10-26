@@ -14,15 +14,46 @@ Pi.prototype.transition=Qy;var Ky=[null],tg=function(t,n){var e,r,i=t.__transiti
 (function () {
 'use strict';
 
-function Card(container, drawing_fn){
-	this.container = container;
-	this.draw = drawing_fn;
-	this.store = {};
-	this.default_data = null;
+function Card(container){
+	//hold references to the dom, specific to this card
 	this.dom = {};
+	this.container = this.dom.container = container;
+
+	//generic data store for helper data
+	this.store = {};
+
+	//default card data
+	this.default_data = null;
 	
-	this.data_cache = [];
+	//for xhr data requests (e.g. d3.json), cache data by default to avoid unnecessary network requests
 	this.data_cache_on = true;
+	this.data_cache = [];
+
+	//hold functions used to build the data card contents
+	this.build_fns = [];
+	this.build_index = 0;
+	this.build_count = 0;
+
+	this.responsive_on = false;
+}
+
+//register card building functions
+Card.prototype.build = function(fn, view_name){
+	
+	if(arguments.length > 0 && typeof fn === "function"){
+		this.build_fns.push({fn:fn, name: !!view_name ? view_name : "View " + (++this.build_count) });
+	}
+	else if(arguments.length == 0 && this.build_index < this.build_fns.length ){
+		this.build_fns[this.build_index].fn.call(this, this.default_data);
+	}
+
+	return this;
+}
+
+Card.prototype.set_view = function(view){
+	//no-op for now
+
+	return this;
 }
 
 //get data
@@ -38,7 +69,8 @@ Card.prototype.get_data = function(prop){
 	}
 }
 
-Card.prototype.update = function(data, prop, suppress_redraw){
+//set data (and optionally redraw)
+Card.prototype.set_data = function(data, prop, redraw){
 	if(arguments.length==1){
 		this.default_data = data;
 	}
@@ -46,10 +78,13 @@ Card.prototype.update = function(data, prop, suppress_redraw){
 		this.store[prop] = data;
 	}
 
-	if(!!this.draw && !suppress_redraw){
+	//redraw with current granularity
+	if(!!redraw){
 		//draw is called as a method of the card (the this-object will ref the container)
-		this.draw();
+		this.build();
 	}
+
+	return this;
 }
 
 Card.prototype.json = function(uri, prop){
@@ -60,10 +95,10 @@ Card.prototype.json = function(uri, prop){
 	var cached_data = this.check_cache(uri);
 	if(cached_data !== null){
 		if(arglen==1){
-			this.update(cached_data);
+			this.set_data(cached_data);
 		}
 		else if(arglen > 1){
-			this.update(cached_data, prop);
+			this.set_data(cached_data, prop);
 		}
 	}
 	else{
@@ -76,17 +111,21 @@ Card.prototype.json = function(uri, prop){
 			}
 			
 			if(arglen==1){
-				self.update(data);
+				self.set_data(data);
 			}
 			else if(arglen > 1){
-				self.update(data, prop);
+				self.set_data(data, prop);
 			}
 		});
 	}
+
+	return this;
 }
 
 Card.prototype.cache = function(){
 	this.data_cache_on = !this.data_cache_on;
+
+	return this;
 }
 
 Card.prototype.check_cache = function(uri){
@@ -107,118 +146,120 @@ Card.prototype.check_cache = function(uri){
 
 }
 
+Card.prototype.error = function(){
+	console.log("Error building visual")
+	var wrap = d3.select(this.container);
+	wrap.selectAll("*").remove();
+	wrap.append("p").style("padding","20px").append("em").html("An error has occured.<br />Please reload the page.")
+	return this;
+}
+
+Card.prototype.responsive = function(){
+	if(!this.responsive_on){
+		this.responsive_on = true;
+		var tiptimer;
+		var self = this;
+		window.addEventListener("resize", function(){
+			clearTimeout(tiptimer);
+			self.build();
+		}, 150);
+	}
+	return this;
+}
+
+//wrapper for the Card class to avoid having to use the new keyword
+function card(container){
+	var c = new Card(container);
+	return c;
+}
+
+//viewport dimensions
+function dimensions(el, maxwidth, maxheight){
+	if(arguments.length > 0){
+		var element = el;
+	}
+	else{
+		var element = document.documentElement;
+	}
+
+	var floor = 50;
+	var err = false;
+
+	try{
+		var box = element.getBoundingClientRect();
+		var w = Math.floor(box.right - box.left);
+		var h = Math.floor(box.bottom - box.top);
+		if(w < floor || h < floor){throw "badWidth"}
+	}
+	catch(e){
+		var box = {};
+		var w = floor;
+		var h = floor;
+		err = true;
+	}
+
+	if(!!maxwidth && w > maxwidth){w = maxwidth}
+	if(!!maxheight && h > maxheight){h = maxheight}
+
+	var dim = {width:w, height:h, error:err, box:box};
+
+	return dim;
+}
+
 //draw congressional district maps
 //the exported function is a decorator that gives the returned function access to the lookup table 
+function draw_state(lookup){
 
-function draw_map(lookup){
+	var state_cuts = d3.nest().key(function(d,i){return d.state}).object(lookup);
 
 	//the this-object is called as a method of a card object and will have access to
   	//container: the dom object containing the map
-	var fn = function(){
+	var fn = function(default_data){
+
 		var wrap = d3.select(this.container).style("margin","0px auto");
 		var json = this.get_data();
 
 		var path = d3.geoPath();
 		var geoj = topojson.feature(json, json.objects.districts);
+
+		wrap.selectAll("*").remove();
+
+		var svg = wrap.append("div").classed("mi-interactive-container c-fix", true).append("svg");
+
+		var map_group = svg.append("g");
+			map_group.datum(geoj);
+
+		var chart_group = svg.append("g");
+			chart_group.datum(lookup);
 		
-		var pov_extent = d3.extent(geoj.features, function(d,i){return d.properties.pov1014});
-		var chgpoor_extent = d3.extent(geoj.features, function(d,i){return d.properties.chgpoor});
+		//get viewport dimensions
+		var dims = dimensions();
+		console.log(dims);
 
-		var int = d3.interpolateLab("#eeeeee", "#333333");
-		var pov_scale = d3.scaleSequential(int).domain(pov_extent);
-		var chgpoor_scale = d3.scaleSequential(int).domain(chgpoor_extent);
+		//map
+		var shapes_u = map_group.selectAll("path").data(function(d,i){return d.features});
+		shapes_u.exit().remove();
+		var shapes = shapes_u.enter().append("path").merge(shapes_u);
 
-		//console.log(pov_scale(0.15));
+		shapes.attr("d", path)
+		 .attr("stroke","#eeeeee")
+		 .attr("fill",function(d, i){
+		 	return d.properties.party === "D" ? "#5555ff" : (d.properties.party === "R" ? "#ff5555" : "#dddddd");
+		 })
+		 .attr("stroke-width", 1);
 
-		//map groups
-		var map_groups_u = wrap.selectAll("div.map-groups").data([
-			{
-				title:"Poverty rates during 2010–14",
-				parties:[
-					{party:"D", features:geoj.features, indicator:"pov1014", scale:pov_scale},
-					{party:"R", features:geoj.features, indicator:"pov1014", scale:pov_scale}
-				]				
-			},
-			{
-				title:"Percent change in the poor population, 2000 to 2010–14",
-				parties:[
-					{party:"D", features:geoj.features, indicator:"chgpoor", scale:chgpoor_scale},
-					{party:"R", features:geoj.features, indicator:"chgpoor", scale:chgpoor_scale}
-				]
-			}
-		]);
-		var map_groups_e = map_groups_u.enter().append("div")
-			.classed("map-groups c-fix",true)
-			.style("float","left")
-			.style("margin","10px 0px");
-		map_groups_e.append("p");
+		try{
+			var gbox = map_group.node().getBoundingClientRect();
+			var sbox = svg.node().getBoundingClientRect();
+			var offset = gbox.top - sbox.top;
+			var gheight = gbox.bottom - gbox.top;
+			svg.style("min-height", gheight+"px");
+		} 
+		catch(e){
+			svg.style("min-height","450px");
+		}
 
-		var map_groups = map_groups_e.merge(map_groups_u);
-		map_groups.select("p").text(function(d,i){return d.title})
-							  .style("padding","0px 0px 3px 0px")
-							  .style("border-bottom","1px solid #aaaaaa")
-							  .style("margin","3px 10px 3px 0px").style("text-align","center");
-
-		//maps
-		var maps_u = map_groups.selectAll("div.metro-interactive-map")
-							   .data(function(d,i){return d.parties});
-		maps_u.exit().remove();
-		var maps_e = maps_u.enter().append("div").classed("metro-interactive-map",true);
-			maps_e.append("p").append("span");
-			maps_e.append("svg");
-		var maps = maps_e.merge(maps_u);
-
-		maps.select("p")
-			.style("margin","3px 10px 15px 0px")
-			.style("text-align","center")
-			.style("line-height","16px")
-			.select("span")
-			.text(function(d,i){return d.party == "D" ? "Democratic incumbents" : "Republican incumbents"})
-			.classed("r-district", function(d,i){return d.party=="R"})
-			.classed("d-district", function(d,i){return d.party=="D"})
-			;
-
-		var svg = maps.select("svg");
-		
-		svg.each(function(D,I){
-			var thiz = d3.select(this);
-			var gu = thiz.selectAll("g").data([D,D]);
-			var g = gu.enter().append("g").merge(gu);
-
-			g.each(function(d,i){
-				var thiz = d3.select(this);
-				var districts_u = thiz.selectAll("path").data(d.features);
-				districts_u.exit().remove();
-				var districts = districts_u.enter().append("path").merge(districts_u);
-				districts.attr("d", path)
-						 .attr("stroke","#e0e0e0")
-						 .attr("fill",function(dd, ii){
-						 	if(i==0 && dd.properties.party == d.party){
-						 		return d.scale(dd.properties[d.indicator]);
-						 	}
-						 	else{
-						 		return "none";
-						 	}
-						 })
-						 .attr("stroke-width", function(dd, ii){
-						 	return i===0 ? "0" : "1";
-						 });				
-			});
-
-			try{
-				var box = g.node().getBoundingClientRect();
-				var boxw = Math.ceil(box.right - box.left);
-				var boxh = Math.ceil(box.bottom - box.top);
-			}
-			catch(e){
-				var boxw = 320;
-				var boxh = 320;
-			}
-
-			thiz.style("height",boxh+"px").style("width",boxw+"px");
-
-		});
-	}
+	};
 
 	return fn;
 }
@@ -237,9 +278,23 @@ state_select.setup = function(container){
 
 
 	var wrap = d3.select(container);
-		wrap.selectAll("select").remove(); //there's no updating here
+		wrap.selectAll("*").remove(); //there's no updating here
 
-	var select = wrap.append("select");
+	var instruction = wrap.append("p").html("<em>Select a state</em>: ")
+									  .style("display","inline-block")
+									  .style("margin","0px 7px 0px 0px")
+									  .style("line-height","1.65em")
+									  .style("font-size","1em")
+									  .style("padding","2px 0px 2px 0px");
+
+	var select = wrap.append("select").style("display","inline-block")
+									  .style("margin","0px 0px 0px 0px")
+									  .style("line-height","1.65em")
+									  .style("font-size","1em")
+									  .style("padding","2px 5px 2px 5px")
+									  .style("background","transparent")
+									  .style("outline","none");
+
 	var options = select.selectAll("option").data(states.filter(function(d,i,a){
 		var fips = +d.STATE;
 		return fips <= 56;
@@ -247,12 +302,32 @@ state_select.setup = function(container){
 		options.attr("value", function(d,i){return d.STATE})
 			   .text(function(d,i){return d.STATE_NAME});
 
+	var t = function(s){
+		return {fips: s.STATE, abbr: s.STUSAB, name:s.STATE_NAME};
+	}
+
 	select.on("change", function(d,i){
 		var val = this.value;
+		try{
+			var s = states[this.selectedIndex];
+			if(s.STATE===val){
+				var r = t(s);
+			}
+			else{
+				throw "ERROR";
+			}
+			
+		}
+		catch(e){
+			var r = {fips: val, abbr: null, name:null};
+		}
+
 		if(!!state_select.onchg){
-			state_select.onchg(val);
+			state_select.onchg(r);
 		}
 	});
+
+	return t(states[0]);
 }
 
 state_select.onchange = function(callback){
@@ -261,24 +336,54 @@ state_select.onchange = function(callback){
 
 //gig economy interactive - oct 2016
 function mainfn(){
-	var datarepo = "./data/shapefiles/topojson/";
-	var selected_state = "01";
+	var datarepo = "./assets/";
 
 	//layout
 	var wrap = document.getElementById("congressional-district-poverty");
+	var d3wrap = d3.select(wrap);
 
-	var select_wrap = d3.select(wrap).append("div");
-	state_select.setup(select_wrap.node());
+	var select_wrap = d3wrap.append("div");
+	var selected_state = state_select.setup(select_wrap.node());
 
-	//map drawing fun 1
-	var df = draw_map();
-	var card = new Card(wrap, df);
+	var title_box = d3wrap.append("div");
+	var title_text = title_box.append("p").style("font-size","1.5em").style("margin","1em 0em")
+										  .append("span").text("Poverty by Congressional district: ");
+	var metro_title = title_text.append("strong");
 
-	card.json(datarepo + "st" + selected_state + ".json");
+	var graphics_wrap = d3wrap.append("div");
+	var main_card = card(graphics_wrap.node()); 
 
-	state_select.onchange(function(state){
-		card.json(datarepo + "st" + state + ".json");
-	});
+	//get primary data
+	d3.json(datarepo + "poverty_trends.json", function(e, d){
+		if(e){
+			//error condition
+			console.log(e);
+		}
+		else{
+			//chart drawing function
+			var df = draw_state(d);
+			main_card.build(df).responsive();
+
+			var update_card = function(state){
+				selected_state = state;
+				d3.json(datarepo + "st" + selected_state.fips + ".json", function(e, d){
+					if(e){
+						main_card.error();
+					}
+					else{
+						metro_title.text(selected_state.name);
+						main_card.set_data(d).build();
+					}
+				});
+			}
+
+			state_select.onchange(update_card);		
+			
+			update_card(selected_state);	
+		}
+	})
+
+
 
 }
 

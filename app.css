@@ -6,7 +6,10 @@
 
 .metro-interactive{
 	position:relative;
-	min-width:320px;
+	min-width:300px;
+	max-width:1180px;
+	margin:0px auto;
+	padding:10px;
 }
 
 .metro-interactive *{
@@ -40,11 +43,10 @@
 	padding:0em 0em 0em 2.25em;
 }
 
-.metro-interactive-map{
-	min-width:320px;
-	min-height:160px;
-	float:left;
-	padding:10px 15px;
+.metro-interactive-container{
+	width:100%;
+	min-height:250px;
+	padding:0px;
 }
 
 .r-district, .d-district{
@@ -95,22 +97,14 @@
 }
 
 @media (min-width:0px){
-	.metro-interactive{
-		width:320px;
-	}
+
 }
 
 @media (min-width:640px){
-	.metro-interactive{
-		width:auto;
-		max-width:640px;
-	}
+
 }
 
 @media (min-width:1280px){
-	.metro-interactive{
-		width:auto;
-		max-width:1280px;
-	}
+
 }
 
