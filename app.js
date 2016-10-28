@@ -14,6 +14,20 @@ Pi.prototype.transition=Qy;var Ky=[null],tg=function(t,n){var e,r,i=t.__transiti
 (function () {
 'use strict';
 
+//All data for each build/view must be tightly coupled.
+//E.g. if data is fetched asynchronously, you must take measures to ensure that any additional data used at the time of
+//callback execution is tightly coupled -- e.g. if you set some data, A, with set_data (synchronously), then you execute
+//card.json(B) and the card build function relies on both A and B, there's no guarantee that data A will be relevant to 
+//data B if the UI is such that the user is able to execute set_data() again or execute card.json() again while they
+//are waiting for the first card.json result to return. 
+
+//the appropriate data can be bound together in a callback passed to card.json(). until a build queuing/data coupling 
+//scheme is implemented, this is the safest way to use the Card class
+
+//responsiveness at the card level is currently disabled until further edits to the API are made. specifically, the above
+//issues need to be taken into consideration and safeguards need to be implemented to prevent browser resize events calling
+//build when no data exists yet (or the wrong data exists, per above).  
+
 function Card(container){
 	//hold references to the dom, specific to this card
 	this.dom = {};
@@ -35,16 +49,24 @@ function Card(container){
 	this.build_count = 0;
 
 	this.responsive_on = false;
+
+	//awaiting data?
+	this.fetching_data = false;
 }
 
 //register card building functions
 Card.prototype.build = function(fn, view_name){
-	
 	if(arguments.length > 0 && typeof fn === "function"){
-		this.build_fns.push({fn:fn, name: !!view_name ? view_name : "View " + (++this.build_count) });
+		var fn_name = !!view_name ? view_name : "View " + (++this.build_count);
+		this.build_fns.push({fn:fn, name: fn_name});
 	}
 	else if(arguments.length == 0 && this.build_index < this.build_fns.length ){
-		this.build_fns[this.build_index].fn.call(this, this.default_data);
+		try{
+			this.build_fns[this.build_index].fn.call(this, this.default_data);
+		}
+		catch(e){
+			this.error();
+		}
 	}
 
 	return this;
@@ -70,7 +92,7 @@ Card.prototype.get_data = function(prop){
 }
 
 //set data (and optionally redraw)
-Card.prototype.set_data = function(data, prop, redraw){
+Card.prototype.set_data = function(data, prop){
 	if(arguments.length==1){
 		this.default_data = data;
 	}
@@ -78,30 +100,29 @@ Card.prototype.set_data = function(data, prop, redraw){
 		this.store[prop] = data;
 	}
 
-	//redraw with current granularity
-	if(!!redraw){
-		//draw is called as a method of the card (the this-object will ref the container)
-		this.build();
-	}
-
 	return this;
 }
 
-Card.prototype.json = function(uri, prop){
+//to do: create a build queue that associates each call to build with data availability
+Card.prototype.json = function(uri, callback, prop){
 	var self = this;
-	var arglen = arguments.length;
+	var default_data = !prop;
 	
 	//check if data has been cached -- if so, use it
 	var cached_data = this.check_cache(uri);
 	if(cached_data !== null){
-		if(arglen==1){
+		if(default_data){
 			this.set_data(cached_data);
 		}
-		else if(arglen > 1){
+		else{
 			this.set_data(cached_data, prop);
 		}
+
+		if(!callback){this.build();}
+		else{callback.call(this, cached_data);}
 	}
 	else{
+		self.fetching_data = true;
 		d3.json(uri, function(error, data){
 			if(error){
 				data = null;
@@ -110,12 +131,17 @@ Card.prototype.json = function(uri, prop){
 				self.data_cache.push({uri:uri, data:data});
 			}
 			
-			if(arglen==1){
+			if(default_data){
 				self.set_data(data);
 			}
-			else if(arglen > 1){
+			else{
 				self.set_data(data, prop);
 			}
+
+			if(!callback){self.build();}
+			else{callback.call(self, data);}
+
+			self.fetching_data = false;
 		});
 	}
 
@@ -124,12 +150,10 @@ Card.prototype.json = function(uri, prop){
 
 Card.prototype.cache = function(){
 	this.data_cache_on = !this.data_cache_on;
-
 	return this;
 }
 
 Card.prototype.check_cache = function(uri){
-	
 	if(this.data_cache_on && this.data_cache.length > 0){
 		var datindex = 0;
 		for(var i=0; i<this.data_cache.length; i++){
@@ -143,11 +167,9 @@ Card.prototype.check_cache = function(uri){
 	else{
 		return null;
 	}
-
 }
 
 Card.prototype.error = function(){
-	console.log("Error building visual")
 	var wrap = d3.select(this.container);
 	wrap.selectAll("*").remove();
 	wrap.append("p").style("padding","20px").append("em").html("An error has occured.<br />Please reload the page.")
@@ -155,14 +177,19 @@ Card.prototype.error = function(){
 }
 
 Card.prototype.responsive = function(){
+	//for now, no-op until there is greater robustness in data handling/coupling of data to build events
+	return null;
+
 	if(!this.responsive_on){
 		this.responsive_on = true;
 		var tiptimer;
 		var self = this;
 		window.addEventListener("resize", function(){
 			clearTimeout(tiptimer);
-			self.build();
-		}, 150);
+			tiptimer = setTimeout(function(){
+				self.build();
+			}, 150);
+		});
 	}
 	return this;
 }
@@ -174,67 +201,614 @@ function card(container){
 }
 
 //viewport dimensions
-function dimensions(el, maxwidth, maxheight){
-	if(arguments.length > 0){
-		var element = el;
-	}
-	else{
-		var element = document.documentElement;
+
+//the table function takes a container and an array of associative array objects.
+
+function table(container, height){
+	var columns = [];
+	var callbacks = {row:null, cell:null};
+	
+	var sortcol = null;
+	var last_sortcol = null;
+
+	var cell_widths = [];
+	var alignments = []; //-1-left 0-middle 1-right
+
+	var nrows = null;
+
+	var notes = [];
+
+	var data = null;
+	var wrap = d3.select(container).append("div").style("width","100%").style("height","100%").style("padding","0px");
+
+	if(!height){height = 500}
+
+	//append two tables. thead holds header. tbody holds body
+	var thead_wrap = wrap.append("div").style("border-bottom","1px solid #aaaaaa");
+	var thead = thead_wrap.append("table")
+						  .style("table-layout","fixed")
+						  .style("width","100%")
+						  .style("border-collapse","collapse")
+						  .append("tbody");
+	
+	var tbody_wrap = wrap.append("div");
+	var tbody = tbody_wrap.append("table")
+						  .style("table-layout","fixed")
+						  .style("width","100%")
+						  .style("height","100%")
+						  .style("border-collapse","collapse")
+						  .append("tbody");
+
+	var tfoot = wrap.append("div");
+	var tnotes = wrap.append("div").style("margin-top","2em").style("text-align","left");
+
+	//var rows
+	var thr, tbr;
+
+	//table header and table body td
+	var thd, tbd;
+	
+	var T = {};
+
+	T.data = function(d){
+		data = d;
+		return T;
 	}
 
-	var floor = 50;
-	var err = false;
+	T.truncate = function(n){
+		if(n==null){
+			nrows = null;
+		}
+		else{
+			nrows = n;
+		}
+		return T;
+	}
 
+	T.notes = function(text){
+		notes = notes.concat(text);
+		
+		var tu = tnotes.selectAll("p").data(notes);
+		var t = tu.enter().append("p").merge(tu);
+		t.html(function(d,i){return d}).style("margin","0px").style("line-height","1.65em");
+		return T;
+	}
+
+	T.rows = function(fn){
+		if(arguments.length > 0){
+			callbacks.row = fn;
+			if(!!tbr){fn(tbr)}
+		}
+		return tbr;
+	}
+
+	T.cells = function(fn){
+		if(arguments.length > 0){
+			callbacks.cell = fn;
+			if(!!tbd){fn(tbd)}			
+		}
+		return tbd;
+	}
+
+	//the column method registers a new column
+	  //key is used to extract data values from each associative array in data
+	  //alias is used to label the column header
+	  //formatter is used to print the value, it is called with the full row of data as the this-object
+	  //the default sort is descending, default_sort_ascending reverses this
+	var col_index = -1;
+	T.column = function(key, alias, ascending, formatter, default_sort){
+		var col = {};
+		if(!formatter){ formatter = function(v){return v} }
+
+		col.get = function(d){
+			var val = d[key];
+			var fmt = formatter.call(d, val);
+			return {val: val, print: fmt, key:key}
+		}
+		col.key = key;
+		col.index = ++col_index;
+		col.name = alias;
+		col.asc = !!ascending ? true : false;
+		columns.push(col);
+
+		if(col.index == 0){
+			sortcol = col;
+			last_sortcol = col;
+		}
+		else if(!!default_sort){sortcol = col}
+
+		return T;
+	}
+
+	//pass in an array of widths, representing percentages
+	T.widths = function(w){
+		cell_widths = cell_widths.concat(w);
+		return T;
+	}
+	T.width = T.widths;
+
+	T.set_ta = function(w){
+		alignments = alignments.concat(w);
+		return T;
+	}
+
+	//sort data according to current value of sortcol
+	function sort_row_data(row_data){
+		var index = sortcol.index;
+		var index_tb = last_sortcol.index;
+
+		var order = sortcol.asc ? 1 : -1;
+
+		row_data.sort(function(a,b){
+			var va = a[index].val;
+			var vb = b[index].val;
+
+			if(va == vb){
+				var va_tb = a[index_tb].val;
+				var vb_tb = b[index_tb].val;
+
+				var last_order = last_sortcol.asc ? 1 : -1;
+				var c = last_order*(va_tb < vb_tb ? -1 : (va_tb == vb_tb ? 0 : 1)); 
+
+				//console.log("a == b // a: " + va + " | b: " + vb);
+				//console.log("second comp // a: " + va_tb + " | b: " + vb_tb + " | comparison: " + c);
+			}
+			else if(va==null){
+				var c = 1;
+			}
+			else if(vb==null){
+				var c = -1;
+			}
+			else if(va < vb){
+				var c = order*(-1);
+				//console.log("a < b // a: " + va + " | b: " + vb + " | comparison: " + c);
+			}
+			else{
+				var c = order;
+				//console.log("a > b // a: " + va + " | b: " + vb + " | comparison: " + c);
+			}
+
+
+			return c;
+		});
+
+		return row_data;
+	}
+
+	T.build = function(){
+
+		//build rows
+		var rows = data.map(function(from_row){
+			var row = columns.map(function(column){
+				return column.get(from_row);
+			});
+			row.full_data = from_row;
+			return row;
+		});
+
+		sort_row_data(rows);
+
+		if(nrows!=null && nrows < rows.length){
+			var truncated = true;
+			rows = rows.slice(0,nrows);
+
+			var showmore0 = tfoot.selectAll("p.show-more-results").data([0]);
+			var showmore1 = showmore0.enter().append("p").classed("show-more-results",true).merge(showmore0);
+				showmore1
+					.html("Results limited to " + nrows + ". <span>Show all " + data.length + " »</span>")
+					.style("font-style","italic")
+					.style("text-align","right")
+					.style("cursor","pointer")
+					.classed("disable-highlight",true);
+
+			showmore1.on("mousedown", function(){
+				nrows = null;
+				T.build();
+			});
+		}
+		else{
+			tfoot.selectAll(".show-more-results").remove();
+		}
+
+		//table header rows
+		var thr_u = thead.selectAll("tr").data([columns]);
+		thr_u.exit().remove();
+		thr = thr_u.enter().append("tr").merge(thr_u);
+
+		//table header cells
+		var thd_u = thr.selectAll("td").data(function(d,i){return d});
+		thd_u.exit().remove();
+		
+		thd = thd_u.enter().append("td").merge(thd_u);
+		thd.html(function(d,i){return d.name}).style("font-weight","bold").style("cursor","pointer");
+		thd.style("text-align", function(d,i){
+			if(i < alignments.length){
+				var a = alignments[i];
+				return a==1 ? "right" : (a==-1 ? "left" : "center");
+			}
+		}).style("padding","0.25em 0.5em 0.25em .5em")
+		  .style("vertical-align","bottom")
+		  .style("line-height","1.25em")
+		  .classed("disable-highlight",true)
+		  .classed("sort-asc", function(d,i){
+		  	return i==sortcol.index && sortcol.asc;
+		  })
+		  .classed("sort-desc", function(d,i){
+		  	return i==sortcol.index && !sortcol.asc;
+		  });
+		  
+
+		//table body rows
+		var tbr_u = tbody.selectAll("tr").data(rows);
+		tbr_u.exit().remove();
+		tbr = tbr_u.enter().append("tr").merge(tbr_u);
+
+		//table body cells
+		var tbd_u = tbr.selectAll("td").data(function(d,i){return d});
+		tbd_u.exit().remove();
+		
+		tbd = tbd_u.enter().append("td").merge(tbd_u);
+		tbd.html(function(d,i){return d.print});
+		tbd.style("text-align", function(d,i){
+			if(i < alignments.length){
+				var a = alignments[i];
+				return a==1 ? "right" : (a==-1 ? "left" : "center");
+			}
+		}).style("padding","1.5em 0.5em 0.25em 0.5em")
+		  .style("vertical-align","bottom")
+		  .style("line-height","1.25em")
+		  .style("border-bottom","1px dotted #aaaaaa");
+
+		if(cell_widths.length >= columns.length){
+			thd.style("width", function(d,i){return cell_widths[i] + "%"});
+			tbd.style("width", function(d,i){return cell_widths[i] + "%"});
+		}
+
+		thd.on("mousedown", function(d,i){
+			if(d.key==sortcol.key){
+				sortcol.asc = !sortcol.asc;
+			}
+			else{
+				last_sortcol = sortcol;
+				sortcol = d;
+			} 
+
+			//rebuild the table
+			T.build();
+		})
+
+		if(!!callbacks.row){callbacks.row(tbr)}
+		if(!!callbacks.cell){callbacks.cell(tbd)}	
+
+		return T;
+	}
+
+	T.resize = function(){
+		setTimeout(function(){
+			try{
+				var box = scope.outerWrap.node().getBoundingClientRect();
+				
+				var t1box = t1.node().getBoundingClientRect();
+				
+				//row 1 of second table
+				var r1 = t2.selectAll("tr").node();
+				var r1box = r1.getBoundingClientRect();
+				var r1width = Math.round(r1box.right - r1box.left);
+
+				two_tables.filter(function(d,i){return i==0}).style("width", r1width + "px");
+
+
+				var boxh = Math.round(box.bottom - box.top);
+				var h = boxh - (t1box.bottom-box.top);
+				var w = box.right - box.left;
+				if(w > 900){
+					var fs = "1em";
+				}
+				else if(w > 500){
+					var fs = "0.8em";
+				}
+				else{
+					var fs = "0.65em";
+				}
+
+				table_cells.style("font-size", fs);
+				//console.log(scope.outerWrap.node());
+				//console.log(t2.node())
+				if(h < 250){throw "badH"}
+				
+				two_table_sections.style("height",function(d,i){return i==1 ? h+"px" : "auto"});
+			}
+			catch(e){
+				//no-op
+			}
+
+		},0);
+	}
+
+	return T;
+}
+
+var format = {};
+format.rank = function(r){
 	try{
-		var box = element.getBoundingClientRect();
-		var w = Math.floor(box.right - box.left);
-		var h = Math.floor(box.bottom - box.top);
-		if(w < floor || h < floor){throw "badWidth"}
+	    if(r == null){
+	        throw "badInput";
+	    }
+	    else{
+	        
+	        var c = r + "";
+	        var f = +(c.substring(c.length-1)); //take last letter and coerce to an integer
+	         
+	        var e = ["th","st","nd","rd","th","th","th","th","th","th"];
+	 
+	        var m = (+r)%100; 
+	        var r_ = (m>10 && m<20) ? c + "th" : (c + e[f]); //exceptions: X11th, X12th, X13th, X14th
+	    }
 	}
 	catch(e){
-		var box = {};
-		var w = floor;
-		var h = floor;
-		err = true;
+	    var r_ = r+"";
 	}
 
-	if(!!maxwidth && w > maxwidth){w = maxwidth}
-	if(!!maxheight && h > maxheight){h = maxheight}
+	return r_; 
+}
 
-	var dim = {width:w, height:h, error:err, box:box};
+//percent change
+format.pct0 = d3.format("+,.0%");
+format.pct1 = d3.format("+,.1%");
 
-	return dim;
+//percent change
+format.ch0 = d3.format("+,.0f");
+format.ch1 = d3.format("+,.1f");
+
+//shares
+format.sh0 = d3.format(",.0%");
+format.sh1 = d3.format(",.1%");
+
+//numeric
+format.num0 = d3.format(",.0f");
+format.num1 = d3.format(",.1f");
+format.num2 = d3.format(",.2f");
+format.num3 = d3.format(",.3f");
+
+//USD
+format.doll0 = function(v){return "$" + format.num0(v)};
+format.doll1 = function(v){return "$" + format.num1(v)};
+format.doll2 = function(v){return "$" + format.num2(v)};
+
+format.dolle30 = function(v){return "$" + format.num0(v*1000)};
+
+//id
+format.id = function(v){return v};
+
+//wrapper that handles missings/nulls
+format.fn = function(v, fmt){
+	if(format.hasOwnProperty(fmt)){
+		var fn = format[fmt];
+	}
+	else{
+		var fn = format.id;
+	}
+	return v==null ? "N/A" : fn(v);
+}
+
+//similar to fn above, but returns a decorated function instead of a value
+format.fn0 = function(fmt){
+	if(format.hasOwnProperty(fmt)){
+		var fn = format[fmt];
+	}
+	else{
+		var fn = format.id;
+	}
+	return function(v){
+		return v==null ? "N/A" : fn(v);
+	}
 }
 
 //draw congressional district maps
 //the exported function is a decorator that gives the returned function access to the lookup table 
-function draw_state(lookup){
+function draw_state(lookup_data){
+
+	var lookup_filtered = lookup_data.filter(function(d,i){
+		return (d.state !== "US" && d.state !== "US_R" && d.state !== "US_D");
+	});
+
+	var lookup = lookup_filtered.map(function(d,i){
+		var s = d.cdid+"";
+   		var len = s.length;
+   		var district = s.substring(len-2);
+
+   		d.cdshort = d.state + "-" + district;
+
+   		d.repdr = d.rep + " (" + d.party + ")";
+   		return d;
+	});
 
 	var state_cuts = d3.nest().key(function(d,i){return d.state}).object(lookup);
+	var cols = {D:"#5555ff", R:"#ff5555", I:"#dddddd"}
+//console.log(state_cuts);
+	var extents = {};
+	extents.pov1014 = d3.extent(lookup, function(d,i){return d.pov1014});
+	extents.chgpoor = d3.extent(lookup, function(d,i){return d.chgpoor});
+	extents.chgpov = d3.extent(lookup, function(d,i){return d.chgpov});
+
+	var scales = {};
+	scales.pov1014 = d3.scaleLinear().domain(extents.pov1014).range([10,290]);
+	scales.chgpoor = d3.scaleLinear().domain(extents.chgpoor).range([10,290]);
+	scales.chgpov = d3.scaleLinear().domain(extents.chgpov).range([10,290]);
+
+	var medians = {};
+	medians.pov1014 = d3.median(lookup, function(d,i){return d.pov1014});
+	medians.chgpoor = d3.median(lookup, function(d,i){return d.chgpoor});
+	medians.chgpov = d3.median(lookup, function(d,i){return d.chgpov});
+
+	var apply_med = function(line, indicator){
+		var x = scales[indicator](medians[indicator]);
+		line.attr("x1", x).attr("x2", x).attr("y1","7").attr("y2","33").attr("stroke","#333333").attr("stroke-width","2").style("shape-rendering","crispEdges");
+	}
+
+	var colfn = function(d, state, altcolor){
+			if(state.abbr == d.state){
+				var c = d.party == "R" ? cols.R : (d.party == "D" ? cols.D : cols.I);
+			}
+			else{
+				var c = altcolor;
+			}
+			return c;			
+		}
+
+	var apply_attr = function(circles, state, indicator){
+		circles.attr("cx",function(d,i){
+				return scales[indicator](d[indicator])
+			})
+			.attr("cy", function(d,i){
+				if(state.abbr == d.state){
+					return d.party == "R" ? "19" : "21";
+				}
+				else{
+					return "20";
+				}
+				
+			})
+			.attr("r", function(d,i){
+				return state.abbr == d.state ? 4 : 2.5;
+			})
+			.attr("stroke", function(d,i){
+				return colfn(d, state, "#ffffff")
+			})
+			.attr("stroke-width", function(d,i){
+				return state.abbr == d.state ? "1" : "1";
+			})
+			.attr("fill", function(d,i){
+				return colfn(d, state, "#999999")
+			})
+			.attr("fill-opacity","0.6");
+
+		circles.sort(function(a,b){
+			if(a.state == b.state){
+				return a[indicator] - b[indicator];
+			}
+			else if(a.state == state.abbr){
+				return 1;
+			}
+			else if(b.state == state.abbr){
+				return -1;
+			}
+			else{
+				return 0;
+			}
+		});
+	}
 
 	//the this-object is called as a method of a card object and will have access to
   	//container: the dom object containing the map
+  	var initialized = false;
+  	var metro_title, right_rail, left_rail, table_wrap, state_table;
+  	var path = d3.geoPath();
 	var fn = function(default_data){
-
-		var wrap = d3.select(this.container).style("margin","0px auto");
+		var wrap = d3.select(this.container).style("margin","0px auto").classed("c-fix",true);
 		var json = this.get_data();
+		var state = this.get_data("state");
+		var stdat = state_cuts[state.abbr];
 
-		var path = d3.geoPath();
+		//one time code
+		if(!initialized){
+			var title_box = wrap.append("div")
+								.style("padding","5px 0px")
+								.style("border-bottom","1px solid #aaaaaa")
+								.style("margin-bottom","2em");
+			var title_text = title_box.append("p")
+									   .style("font-size","1.5em")
+									   .style("margin","1em 0em 0em 0em");
+			title_text.append("span").text("Poverty in ");
+			metro_title = title_text.append("strong");
+			title_text.append("span").text(" by Congressional district");
+
+			left_rail = wrap.append("div").classed("metro-interactive-left-rail add-divider", true);
+			right_rail = wrap.append("div").classed("metro-interactive-right-rail",true);
+			table_wrap = right_rail.append("div").style("padding","0px").style("width","100%").style("min-height","700px");
+			table_wrap.append("p").text("Poverty rates during 2010–14 and change in the number of poor from 2000 to 2010–14")
+								  .style("text-align","left")
+								  .style("margin","0em 1em 1.5em 0em")
+								  .style("font-style","italic")
+								  .style("font-size","1.25em");
+
+			//build table structure once
+			state_table = table(table_wrap.node());
+
+			var chgpoor_formatter = function(d){
+				var fmt = format.fn(d, "pct1");
+				return this.sigpoor == "*" ? fmt : '<em style="color:#666666">'+fmt + "*</em>";
+			}
+
+			//add columns: function(key, alias, ascending, formatter, default_sort)
+			state_table.column("cdshort", "District", true)
+					.column("party", "Party", true)
+				   .column("rep", "Representative", true)
+				   .column("pov1014","Poverty rate,<br/> 2010–14", false, format.fn0("sh1"), true)
+				   .column("chgpoor","Change in the poor pop., 2000 to 2010–14",false, chgpoor_formatter);
+
+			state_table.set_ta([-1, -1, -1, 1, 1])
+			state_table.widths([14, 14, 30, 20, 22])
+			state_table.notes("Source: Brookings Institution analysis of decennial census and American Community Survery 5-year estimates data");
+			state_table.notes("*Not statistically significant at the 90% confidence level")
+		}
+		
+		state_table.truncate(15);
+		metro_title.text(state.name);
+
+		var num_d = d3.sum(stdat, function(d,i){return d.party=="D" ? 1 : 0});
+		var num_r = d3.sum(stdat, function(d,i){return d.party=="R" ? 1 : 0});
+
 		var geoj = topojson.feature(json, json.objects.districts);
 
-		wrap.selectAll("*").remove();
+		//RIGHT RAIL - TABLE
+		var cell_style = function(cells){
+			cells.style("color", function(d,i){
+				if(d.key == "party"){
+					return d.val == "R" ? cols.R : (d.val == "D" ? cols.D : "#111111");
+				}
+				else{
+					return "#111111";
+				}
+			}).style("font-weight", function(d,i){
+				if(d.key == "party"){
+					return "bold";
+				}
+				else{
+					return "normal";
+				}				
+			});
+		}
 
-		var svg = wrap.append("div").classed("mi-interactive-container c-fix", true).append("svg");
+		//refresh data and rebuild
+		state_table.data(stdat).build(cell_style).cells(cell_style);
 
-		var map_group = svg.append("g");
+		//LEFT RAIL
+		left_rail.selectAll(".left-rail-content").remove(); //start from scratch on each redraw
+		var left_rail_content = left_rail.append("div").classed("left-rail-content",true);
+
+	
+		var map_legend = left_rail_content.append("div").style("margin-left","10px");
+		var map_wrap = left_rail_content.append("div").style("padding","15px")
+											  .style("width","310px")
+											  .style("height","310px")
+											  .style("background-color","#e0e0e0")
+											  .style("border","1px solid #dddddd")
+											  .style("border-radius","1em");
+		
+		var map_svg = map_wrap.append("svg");
+		
+			map_legend.append("p").text("Congressional district landscape").style("margin","0em").style("font-style","italic").style("font-size","1.25em");
+			map_legend.append("p").style("margin","0.5em 0em 0em 1.75em").classed("r-district",true).text(num_r + " Republican incumbent" + (num_r==1 ? "" : "s"));
+			map_legend.append("p").style("margin","0.5em 0em 1em 1.75em").classed("d-district",true).text(num_d + " Democratic incumbent" + (num_d==1 ? "" : "s"));
+
+		var map_group = map_svg.append("g");
 			map_group.datum(geoj);
 
-		var chart_group = svg.append("g");
-			chart_group.datum(lookup);
-		
-		//get viewport dimensions
-		var dims = dimensions();
-		console.log(dims);
+		var chart_height = 250;
+		var chart_shift = 20;
+		var chart_wrap = left_rail_content.append("div").style("margin","2em 0em");
+		var chart_svg = chart_wrap.append("svg").style("height",chart_height+"px");
 
 		//map
 		var shapes_u = map_group.selectAll("path").data(function(d,i){return d.features});
@@ -242,22 +816,75 @@ function draw_state(lookup){
 		var shapes = shapes_u.enter().append("path").merge(shapes_u);
 
 		shapes.attr("d", path)
-		 .attr("stroke","#eeeeee")
+		 .attr("stroke","#ffffff")
 		 .attr("fill",function(d, i){
-		 	return d.properties.party === "D" ? "#5555ff" : (d.properties.party === "R" ? "#ff5555" : "#dddddd");
+		 	return d.properties.party === "D" ? cols.D : (d.properties.party === "R" ? cols.R : cols.I);
 		 })
 		 .attr("stroke-width", 1);
 
-		try{
-			var gbox = map_group.node().getBoundingClientRect();
-			var sbox = svg.node().getBoundingClientRect();
-			var offset = gbox.top - sbox.top;
-			var gheight = gbox.bottom - gbox.top;
-			svg.style("min-height", gheight+"px");
-		} 
-		catch(e){
-			svg.style("min-height","450px");
+		//charts
+		var rate_group = chart_svg.append("g").attr("transform","translate(10,"+chart_shift+")");
+		var chg_group = chart_svg.append("g").attr("transform","translate(10,"+((chart_height/3)+chart_shift)+")");
+		var chg_rate_group = chart_svg.append("g").attr("transform","translate(10,"+(((chart_height*2)/3)+chart_shift)+")");
+
+		var rate_median = rate_group.append("line");
+		var chg_median = chg_group.append("line");
+		var chg_rate_median = chg_rate_group.append("line");		
+
+		var rate_circles = rate_group.selectAll("circle").data(lookup.slice(0)).enter().append("circle");
+		var chg_circles = chg_group.selectAll("circle").data(lookup.slice(0)).enter().append("circle");
+		var chg_rate_circles = chg_rate_group.selectAll("circle").data(lookup.slice(0)).enter().append("circle");
+		
+		apply_med(rate_median, "pov1014");
+		apply_med(chg_median, "chgpoor");
+		apply_med(chg_rate_median, "chgpov");
+
+		apply_attr(rate_circles, state, "pov1014");
+		apply_attr(chg_circles, state, "chgpoor");
+		apply_attr(chg_rate_circles, state, "chgpov");
+
+		//id is the numeric congressional district ID (no leading zeros)
+		function linkem(id, reset){
+			var reset = !!reset;
+			shapes.filter(function(d,i){
+				return id == +d.id;
+			}).attr("stroke-width", !reset ? 5 : 1)
+			  .attr("fill-opacity", !reset ? 0.75 : 1)
+			  .raise();
+
+			state_table.rows().classed("row-highlighted", function(d,i){
+				return id==d.full_data.cdid && !reset;
+			});
+
+			chart_svg.selectAll("circle").filter(function(d,i){
+				return id==d.cdid;
+			})
+			.attr("r", reset ? 4 : 9)
+			.attr("fill-opacity", reset ? "0.6" : "1")
+			.raise();
 		}
+
+		state_table.rows(function(r){
+			r.on("mouseenter", function(d,i){
+				linkem(d.full_data.cdid);
+			});
+			r.on("mouseleave", function(d,i){
+				linkem(d.full_data.cdid, true);
+			})
+		});
+		
+		//chart titles
+		rate_group.append("text").style("font-style","italic").text("Poverty rate, 2010–14");
+		
+		chg_group.append("text").style("font-style","italic").text("Change in poor pop., 2000 to 2010–14").attr("fill","#ffffff").attr("stroke-width","3").attr("stroke","#ffffff");
+		chg_group.append("text").style("font-style","italic").text("Change in poor pop., 2000 to 2010–14");
+
+		chg_rate_group.append("text").style("font-style","italic").text("Change in poverty rate, 2000 to 2010–14").attr("fill","#ffffff").attr("stroke-width","3").attr("stroke","#ffffff");
+		chg_rate_group.append("text").style("font-style","italic").text("Change in poverty rate, 2000 to 2010–14");
+
+
+		
+		initialized = true;
 
 	};
 
@@ -295,6 +922,8 @@ state_select.setup = function(container){
 									  .style("background","transparent")
 									  .style("outline","none");
 
+	this.node = select.node();
+
 	var options = select.selectAll("option").data(states.filter(function(d,i,a){
 		var fips = +d.STATE;
 		return fips <= 56;
@@ -310,6 +939,7 @@ state_select.setup = function(container){
 		var val = this.value;
 		try{
 			var s = states[this.selectedIndex];
+
 			if(s.STATE===val){
 				var r = t(s);
 			}
@@ -327,12 +957,21 @@ state_select.setup = function(container){
 		}
 	});
 
-	return t(states[0]);
+	return states.map(t);
+}
+
+//update the state selection, but don't trigger change event
+state_select.update = function(val){
+	if(this.node){
+		this.node.value = val;
+	}
 }
 
 state_select.onchange = function(callback){
 	state_select.onchg = callback;
 }
+
+//syncronous json load
 
 //gig economy interactive - oct 2016
 function mainfn(){
@@ -342,16 +981,48 @@ function mainfn(){
 	var wrap = document.getElementById("congressional-district-poverty");
 	var d3wrap = d3.select(wrap);
 
-	var select_wrap = d3wrap.append("div");
-	var selected_state = state_select.setup(select_wrap.node());
-
-	var title_box = d3wrap.append("div");
-	var title_text = title_box.append("p").style("font-size","1.5em").style("margin","1em 0em")
-										  .append("span").text("Poverty by Congressional district: ");
-	var metro_title = title_text.append("strong");
+	var select_wrap = d3wrap.append("div").classed("c-fix",true).append("div").style("float","right");
+	var all_states = state_select.setup(select_wrap.node());
+	var selected_state = all_states[0];	
 
 	var graphics_wrap = d3wrap.append("div");
 	var main_card = card(graphics_wrap.node()); 
+
+	function update_card(state){
+		selected_state = state;
+		main_card.json(datarepo + "st" + selected_state.fips + ".json", function(){
+			this.set_data(state, "state");
+			this.build();
+
+			//keep select menu in sync
+			state_select.update(state.fips);
+		});
+	}
+
+	var state_index = 0;
+	function update_card_recurse(state){
+		selected_state = state;
+		select_wrap.style("visibility","hidden");
+		d3.select("body").style("background-color","#ffffff");
+		main_card.json(datarepo + "st" + selected_state.fips + ".json", function(){
+			this.set_data(state, "state");
+			this.build();
+
+			//keep select menu in sync
+			state_select.update(state.fips);
+
+			console.log(state.abbr);
+
+
+ 
+			setTimeout(function(){
+				if(++state_index < all_states.length){
+					update_card_recurse(all_states[state_index]);
+				}
+			}, 500);
+		});
+	}
+
 
 	//get primary data
 	d3.json(datarepo + "poverty_trends.json", function(e, d){
@@ -362,29 +1033,14 @@ function mainfn(){
 		else{
 			//chart drawing function
 			var df = draw_state(d);
-			main_card.build(df).responsive();
-
-			var update_card = function(state){
-				selected_state = state;
-				d3.json(datarepo + "st" + selected_state.fips + ".json", function(e, d){
-					if(e){
-						main_card.error();
-					}
-					else{
-						metro_title.text(selected_state.name);
-						main_card.set_data(d).build();
-					}
-				});
-			}
+			main_card.build(df);
 
 			state_select.onchange(update_card);		
 			
-			update_card(selected_state);	
+			update_card(selected_state);
+			//update_card_recurse(selected_state);
 		}
-	})
-
-
-
+	});
 }
 
 document.addEventListener("DOMContentLoaded", function(){

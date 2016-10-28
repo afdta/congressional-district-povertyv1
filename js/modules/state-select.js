@@ -29,6 +29,8 @@ state_select.setup = function(container){
 									  .style("background","transparent")
 									  .style("outline","none");
 
+	this.node = select.node();
+
 	var options = select.selectAll("option").data(states.filter(function(d,i,a){
 		var fips = +d.STATE;
 		return fips <= 56;
@@ -44,6 +46,7 @@ state_select.setup = function(container){
 		var val = this.value;
 		try{
 			var s = states[this.selectedIndex];
+
 			if(s.STATE===val){
 				var r = t(s);
 			}
@@ -61,7 +64,14 @@ state_select.setup = function(container){
 		}
 	});
 
-	return t(states[0]);
+	return states.map(t);
+}
+
+//update the state selection, but don't trigger change event
+state_select.update = function(val){
+	if(this.node){
+		this.node.value = val;
+	}
 }
 
 state_select.onchange = function(callback){

@@ -2,6 +2,7 @@
 import card from './card-api.js';
 import draw_state from './draw-state.js';
 import state_select from './state-select.js';
+import sync_json from './sync-json.js';
 
 function mainfn(){
 	var datarepo = "./assets/";
@@ -10,16 +11,48 @@ function mainfn(){
 	var wrap = document.getElementById("congressional-district-poverty");
 	var d3wrap = d3.select(wrap);
 
-	var select_wrap = d3wrap.append("div");
-	var selected_state = state_select.setup(select_wrap.node());
-
-	var title_box = d3wrap.append("div");
-	var title_text = title_box.append("p").style("font-size","1.5em").style("margin","1em 0em")
-										  .append("span").text("Poverty by Congressional district: ");
-	var metro_title = title_text.append("strong");
+	var select_wrap = d3wrap.append("div").classed("c-fix",true).append("div").style("float","right");
+	var all_states = state_select.setup(select_wrap.node());
+	var selected_state = all_states[0];	
 
 	var graphics_wrap = d3wrap.append("div");
 	var main_card = card(graphics_wrap.node()); 
+
+	function update_card(state){
+		selected_state = state;
+		main_card.json(datarepo + "st" + selected_state.fips + ".json", function(){
+			this.set_data(state, "state");
+			this.build();
+
+			//keep select menu in sync
+			state_select.update(state.fips);
+		});
+	}
+
+	var state_index = 0;
+	function update_card_recurse(state){
+		selected_state = state;
+		select_wrap.style("visibility","hidden");
+		d3.select("body").style("background-color","#ffffff");
+		main_card.json(datarepo + "st" + selected_state.fips + ".json", function(){
+			this.set_data(state, "state");
+			this.build();
+
+			//keep select menu in sync
+			state_select.update(state.fips);
+
+			console.log(state.abbr);
+
+
+ 
+			setTimeout(function(){
+				if(++state_index < all_states.length){
+					update_card_recurse(all_states[state_index]);
+				}
+			}, 500);
+		});
+	}
+
 
 	//get primary data
 	d3.json(datarepo + "poverty_trends.json", function(e, d){
@@ -30,29 +63,14 @@ function mainfn(){
 		else{
 			//chart drawing function
 			var df = draw_state(d);
-			main_card.build(df).responsive();
-
-			var update_card = function(state){
-				selected_state = state;
-				d3.json(datarepo + "st" + selected_state.fips + ".json", function(e, d){
-					if(e){
-						main_card.error();
-					}
-					else{
-						metro_title.text(selected_state.name);
-						main_card.set_data(d).build();
-					}
-				});
-			}
+			main_card.build(df);
 
 			state_select.onchange(update_card);		
 			
-			update_card(selected_state);	
+			update_card(selected_state);
+			//update_card_recurse(selected_state);
 		}
-	})
-
-
-
+	});
 }
 
 document.addEventListener("DOMContentLoaded", function(){

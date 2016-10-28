@@ -53,6 +53,7 @@ format.dolle30 = function(v){return "$" + format.num0(v*1000)};
 //id
 format.id = function(v){return v};
 
+//wrapper that handles missings/nulls
 format.fn = function(v, fmt){
 	if(format.hasOwnProperty(fmt)){
 		var fn = format[fmt];
@@ -61,4 +62,17 @@ format.fn = function(v, fmt){
 		var fn = format.id;
 	}
 	return v==null ? "N/A" : fn(v);
+}
+
+//similar to fn above, but returns a decorated function instead of a value
+format.fn0 = function(fmt){
+	if(format.hasOwnProperty(fmt)){
+		var fn = format[fmt];
+	}
+	else{
+		var fn = format.id;
+	}
+	return function(v){
+		return v==null ? "N/A" : fn(v);
+	}
 }
