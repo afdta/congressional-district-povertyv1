@@ -23,7 +23,7 @@ export default function draw_state(lookup_data){
 
 	var state_cuts = d3.nest().key(function(d,i){return d.state}).object(lookup);
 	var cols = {D:"#5555ff", R:"#ff5555", I:"#dddddd"}
-//console.log(state_cuts);
+
 	var extents = {};
 	extents.pov1014 = d3.extent(lookup, function(d,i){return d.pov1014});
 	extents.chgpoor = d3.extent(lookup, function(d,i){return d.chgpoor});
@@ -100,7 +100,7 @@ export default function draw_state(lookup_data){
 	//the this-object is called as a method of a card object and will have access to
   	//container: the dom object containing the map
   	var initialized = false;
-  	var metro_title, right_rail, left_rail, table_wrap, state_table;
+  	var metro_title, right_rail, left_rail, table_wrap, state_table, print_link;
   	var path = d3.geoPath();
 	var fn = function(default_data){
 		var wrap = d3.select(this.container).style("margin","0px auto").classed("c-fix",true);
@@ -111,12 +111,34 @@ export default function draw_state(lookup_data){
 		//one time code
 		if(!initialized){
 			var title_box = wrap.append("div")
-								.style("padding","5px 0px")
+								.style("padding","7px 0px")
 								.style("border-bottom","1px solid #aaaaaa")
-								.style("margin-bottom","2em");
-			var title_text = title_box.append("p")
-									   .style("font-size","1.5em")
-									   .style("margin","1em 0em 0em 0em");
+								.style("margin-bottom","2em")
+								.style("position","relative")
+								.classed("c-fix", true);
+			
+			print_link = title_box.append("div").style("float","right")
+												.attr("id","print-to-pdf")
+												.style("margin","2em 0em 0em 0em")
+												.append("p")
+												.style("margin","0.5em 0em 0em 0em")
+												.style("display","inline-block")
+												.style("vertical-align","bottom")
+												.style("line-height","normal")									   		
+										   		.append("a").text("Printable PDF »").attr("target","_blank");
+
+			
+			var title_text = title_box.append("div")
+									    .style("float","left")
+										.style("margin","2em 0em 0em 0em")
+										.append("p")
+										.style("margin","0em")
+										.style("display","inline-block")
+										.style("vertical-align","bottom")
+										.style("line-height","normal")
+									    .style("font-size","1.5em");
+
+
 			title_text.append("span").text("Poverty in ");
 			metro_title = title_text.append("strong");
 			title_text.append("span").text(" by Congressional district");
@@ -149,10 +171,12 @@ export default function draw_state(lookup_data){
 			state_table.widths([14, 14, 30, 20, 22])
 			state_table.notes("Source: Brookings Institution analysis of decennial census and American Community Survery 5-year estimates data");
 			state_table.notes("*Not statistically significant at the 90% confidence level")
-		}
+		} //end one time use code
 		
 		state_table.truncate(15);
 		metro_title.text(state.name);
+
+		print_link.attr("href",this.get_data("repo")+"docs/"+state.abbr+".pdf");
 
 		var num_d = d3.sum(stdat, function(d,i){return d.party=="D" ? 1 : 0});
 		var num_r = d3.sum(stdat, function(d,i){return d.party=="R" ? 1 : 0});

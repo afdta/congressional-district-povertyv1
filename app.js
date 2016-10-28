@@ -625,7 +625,7 @@ function draw_state(lookup_data){
 
 	var state_cuts = d3.nest().key(function(d,i){return d.state}).object(lookup);
 	var cols = {D:"#5555ff", R:"#ff5555", I:"#dddddd"}
-//console.log(state_cuts);
+
 	var extents = {};
 	extents.pov1014 = d3.extent(lookup, function(d,i){return d.pov1014});
 	extents.chgpoor = d3.extent(lookup, function(d,i){return d.chgpoor});
@@ -702,7 +702,7 @@ function draw_state(lookup_data){
 	//the this-object is called as a method of a card object and will have access to
   	//container: the dom object containing the map
   	var initialized = false;
-  	var metro_title, right_rail, left_rail, table_wrap, state_table;
+  	var metro_title, right_rail, left_rail, table_wrap, state_table, print_link;
   	var path = d3.geoPath();
 	var fn = function(default_data){
 		var wrap = d3.select(this.container).style("margin","0px auto").classed("c-fix",true);
@@ -713,12 +713,34 @@ function draw_state(lookup_data){
 		//one time code
 		if(!initialized){
 			var title_box = wrap.append("div")
-								.style("padding","5px 0px")
+								.style("padding","7px 0px")
 								.style("border-bottom","1px solid #aaaaaa")
-								.style("margin-bottom","2em");
-			var title_text = title_box.append("p")
-									   .style("font-size","1.5em")
-									   .style("margin","1em 0em 0em 0em");
+								.style("margin-bottom","2em")
+								.style("position","relative")
+								.classed("c-fix", true);
+			
+			print_link = title_box.append("div").style("float","right")
+												.attr("id","print-to-pdf")
+												.style("margin","2em 0em 0em 0em")
+												.append("p")
+												.style("margin","0.5em 0em 0em 0em")
+												.style("display","inline-block")
+												.style("vertical-align","bottom")
+												.style("line-height","normal")									   		
+										   		.append("a").text("Printable PDF »").attr("target","_blank");
+
+			
+			var title_text = title_box.append("div")
+									    .style("float","left")
+										.style("margin","2em 0em 0em 0em")
+										.append("p")
+										.style("margin","0em")
+										.style("display","inline-block")
+										.style("vertical-align","bottom")
+										.style("line-height","normal")
+									    .style("font-size","1.5em");
+
+
 			title_text.append("span").text("Poverty in ");
 			metro_title = title_text.append("strong");
 			title_text.append("span").text(" by Congressional district");
@@ -751,10 +773,12 @@ function draw_state(lookup_data){
 			state_table.widths([14, 14, 30, 20, 22])
 			state_table.notes("Source: Brookings Institution analysis of decennial census and American Community Survery 5-year estimates data");
 			state_table.notes("*Not statistically significant at the 90% confidence level")
-		}
+		} //end one time use code
 		
 		state_table.truncate(15);
 		metro_title.text(state.name);
+
+		print_link.attr("href",this.get_data("repo")+"docs/"+state.abbr+".pdf");
 
 		var num_d = d3.sum(stdat, function(d,i){return d.party=="D" ? 1 : 0});
 		var num_r = d3.sum(stdat, function(d,i){return d.party=="R" ? 1 : 0});
@@ -971,34 +995,150 @@ state_select.onchange = function(callback){
 	state_select.onchg = callback;
 }
 
-//syncronous json load
+//enable browser history
+
+function history(){
+	var H = {};
+	if(window.history && window.history.pushState){
+		H.push = function(d, u){
+			var url = !!u ? u : null; 
+			window.history.pushState(d, null, url);
+		}
+
+		H.pop = function(callback){
+			var fn = function(event){
+				callback.call(event, event.state);
+			}
+			window.addEventListener("popstate", fn);
+		}
+	}
+	else{
+		H.push = function(){};
+		H.pop = function(){};
+	}
+
+	H.get_hash = function(){
+		return window.location.hash.slice(1);
+	}
+
+	return H;
+}
 
 //gig economy interactive - oct 2016
 function mainfn(){
 	var datarepo = "./assets/";
 
+	//enable browser history
+	var h = history();
+	var initial_hash = h.get_hash();
+
 	//layout
 	var wrap = document.getElementById("congressional-district-poverty");
-	var d3wrap = d3.select(wrap);
+	var d3wrap = d3.select(wrap).style("position","relative");
 
-	var select_wrap = d3wrap.append("div").classed("c-fix",true).append("div").style("float","right");
+	var select_wrap = d3wrap.append("div").classed("c-fix",true).attr("id","state-select-wrap").append("div").style("float","right");
 	var all_states = state_select.setup(select_wrap.node());
+	
+	//determine default state
 	var selected_state = all_states[0];	
+	for(var st=0; st<all_states.length; st++){
+		if(all_states[st].abbr === initial_hash){
+			selected_state = all_states[st];
+			break;
+		}
+	}
 
 	var graphics_wrap = d3wrap.append("div");
 	var main_card = card(graphics_wrap.node()); 
+	main_card.set_data(datarepo, "repo");
 
 	function update_card(state){
-		selected_state = state;
+		//validate and reassign state, otherwise redraw current state
+		var valid_parameter = false;
+		if(!!state && !!state.abbr){
+			for(var st=0; st<all_states.length; st++){
+				if(all_states[st].abbr === state.abbr){
+					selected_state = all_states[st];
+					valid_parameter = true;
+					break;
+				}
+			}
+		}
+		
 		main_card.json(datarepo + "st" + selected_state.fips + ".json", function(){
-			this.set_data(state, "state");
+			this.set_data(selected_state, "state");
 			this.build();
 
 			//keep select menu in sync
-			state_select.update(state.fips);
+			state_select.update(selected_state.fips);
+
+			//push the state when the update is complete
+			h.push(selected_state, "#"+selected_state.abbr);
+
+			phantomPrep();
+
+			if(valid_parameter){console.log(selected_state.abbr);}
 		});
 	}
 
+	//get primary data
+	d3.json(datarepo + "poverty_trends.json", function(e, d){
+		if(e){
+			//error condition
+			//console.log(e);
+		}
+		else{
+			//chart drawing function
+			var df = draw_state(d);
+
+			//register the build function
+			main_card.build(df);
+
+			//register the callback on the state select
+			state_select.onchange(update_card);		
+			
+			update_card(selected_state);
+
+			h.pop(update_card);
+			//update_card_recurse(selected_state);
+		}
+	});
+
+	//remove for production, in addition to function referance above
+	var phantomPrepped = false;
+	function phantomPrep(){
+		if(!phantomPrepped){
+			try{
+				var ua = window.navigator.userAgent;
+				if(ua=="PhantomJS.Render.PDF"){
+					select_wrap.style("visibility","hidden").style("margin-bottom","20px");
+					d3.select("#print-to-pdf").style("visibility","hidden");
+					d3wrap.append("div").style("position","absolute")
+										 .style("top","20px")
+										 .style("right","10px")
+										 .style("height","50px")
+										 .style("width","320px")
+										 .append("img")
+										 .attr("src","./logo.png")
+										 .style("width","100%");
+				}
+			}
+			catch(e){
+				//no-op
+			}
+			finally{
+				phantomPrepped = true;
+			}
+		}
+	}
+
+}
+
+document.addEventListener("DOMContentLoaded", function(){
+	mainfn();
+});
+
+/*
 	var state_index = 0;
 	function update_card_recurse(state){
 		selected_state = state;
@@ -1014,7 +1154,6 @@ function mainfn(){
 			console.log(state.abbr);
 
 
- 
 			setTimeout(function(){
 				if(++state_index < all_states.length){
 					update_card_recurse(all_states[state_index]);
@@ -1022,29 +1161,6 @@ function mainfn(){
 			}, 500);
 		});
 	}
-
-
-	//get primary data
-	d3.json(datarepo + "poverty_trends.json", function(e, d){
-		if(e){
-			//error condition
-			console.log(e);
-		}
-		else{
-			//chart drawing function
-			var df = draw_state(d);
-			main_card.build(df);
-
-			state_select.onchange(update_card);		
-			
-			update_card(selected_state);
-			//update_card_recurse(selected_state);
-		}
-	});
-}
-
-document.addEventListener("DOMContentLoaded", function(){
-	mainfn();
-});
+*/
 
 }());
